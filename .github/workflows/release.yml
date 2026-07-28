@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # gh release create
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build all targets
+        run: bash build.sh "${{ steps.version.outputs.version }}"
+
+      - name: Package platform archives
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          for binary in dist/jrp_*; do
+            name="$(basename "$binary")"
+            platform="${name#jrp_}"
+            platform="${platform%.exe}"
+
+            payload="jrp-${VERSION}"
+            rm -rf "staging/${platform}"
+            mkdir -p "staging/${platform}/${payload}"
+
+            if [[ "$binary" == *.exe ]]; then
+              cp "$binary" "staging/${platform}/${payload}/jrp.exe"
+            else
+              cp "$binary" "staging/${platform}/${payload}/jrp"
+              chmod +x "staging/${platform}/${payload}/jrp"
+            fi
+
+            cp dist-readme.txt "staging/${platform}/${payload}/readme.txt"
+            cp LICENSE "staging/${platform}/${payload}/LICENSE"
+
+            artifact_name="jrp-${VERSION}-${platform//_/-}.zip"
+            (cd "staging/${platform}" && zip -r -q "../../artifacts/${artifact_name}" "${payload}")
+            echo "packaged artifacts/${artifact_name}"
+          done
+          ls -l artifacts
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: jrp-${{ steps.version.outputs.version }}-archives
+          path: artifacts/*.zip
+          if-no-files-found: error
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "JSON Really Pretty ${VERSION}" \
+            --generate-notes \
+            artifacts/*.zip
